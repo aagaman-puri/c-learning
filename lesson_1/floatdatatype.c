@@ -7,7 +7,10 @@ int main(){
     printf("\n");
     float a = 5; 
     float b = 2;
-    float t =  5 / 2;
+    float t =  5/2;
     printf("%f",t);
+    printf("\n");
+    printf("%f",a/b);
+
     return 0;
 }
