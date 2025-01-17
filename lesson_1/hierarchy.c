@@ -7,5 +7,7 @@ int main(){
     a = i/j*j;
     b = j/i*i;
     printf("%d %d %f %f", k , l , a , b);
+    float x = 22.0/7;
+    printf("%f",x);
     return 0;
 }

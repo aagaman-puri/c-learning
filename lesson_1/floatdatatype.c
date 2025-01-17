@@ -11,6 +11,7 @@ int main(){
     printf("%f",t);
     printf("\n");
     printf("%f",a/b);
+    
 
     return 0;
 }
