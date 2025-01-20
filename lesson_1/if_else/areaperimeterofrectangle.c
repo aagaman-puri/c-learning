@@ -19,4 +19,4 @@ int main(){
         printf("Area is equal to perimeter");
     }
     return 0;
-}
+} 
