@@ -8,6 +8,6 @@ int main(){
     printf("%d\n", x-b);
     printf("%d\n", x*b);
     printf("%d\n", x/b);
-
+    return 0;
 }
     
