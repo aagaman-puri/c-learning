@@ -1,0 +1,286 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Jarvis (browser)</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    body { font-family: system-ui, Arial; max-width: 900px; margin: 2rem auto; line-height:1.4; }
+    h1 { margin-bottom: .1rem; }
+    #controls { margin: 1rem 0; }
+    button { padding: .5rem 1rem; margin-right:.5rem; }
+    #log { background:#f7f7f7; padding:1rem; border-radius:6px; min-height:120px; white-space:pre-wrap; }
+    .status { font-weight:700; }
+    label { display:inline-block; margin-top:.5rem; }
+    input[type="text"] { width:100%; padding:.5rem; margin-top:.25rem; }
+    small { color: #666 }
+  </style>
+</head>
+<body>
+  <h1>Jarvis — Browser Assistant</h1>
+  <div>Click <b>Start</b>. Say <i>"Hey Jarvis"</i>. Jarvis will reply <b>"Hello boss"</b> and listen for a command.</div>
+
+  <div id="controls">
+    <button id="startBtn">Start</button>
+    <button id="stopBtn" disabled>Stop</button>
+    <button id="testWake">Test wake (simulate)</button>
+    <span class="status" id="status">Stopped</span>
+  </div>
+
+  <div style="display:flex; gap:1rem;">
+    <div style="flex:1">
+      <label>Transcript / Logs <small>(what Jarvis hears)</small></label>
+      <div id="log"></div>
+    </div>
+    <div style="width:300px">
+      <label>Settings</label>
+      <div style="margin-top:.5rem;">
+        <label><input id="autoFollow" type="checkbox" checked /> Auto listen for follow-up after wake (8s)</label>
+      </div>
+      <div style="margin-top:.5rem">
+        <label>OpenAI in-browser (not recommended)</label>
+        <input id="openaiKey" type="text" placeholder="Paste OpenAI key (sk-...)" />
+        <small>Direct calls from the browser expose your key. Use a server proxy for production.</small>
+      </div>
+    </div>
+  </div>
+
+  <script>
+  // Browser Jarvis
+  // Uses Web Speech API (SpeechRecognition) and SpeechSynthesis
+  // Works best in Chrome/Chromium.
+
+  // Vendor prefix
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SpeechRecognition) {
+    alert('SpeechRecognition not available in this browser. Use Chrome/Edge on desktop.');
+  }
+
+  const startBtn = document.getElementById('startBtn');
+  const stopBtn = document.getElementById('stopBtn');
+  const testWake = document.getElementById('testWake');
+  const statusEl = document.getElementById('status');
+  const logEl = document.getElementById('log');
+  const autoFollowCheckbox = document.getElementById('autoFollow');
+  const openaiKeyInput = document.getElementById('openaiKey');
+
+  let recog;               // continuous recognition for passive listening
+  let activeRecog = null;  // short-time recognition after wake-word
+  let running = false;
+
+  function log(...args) {
+    const t = new Date().toLocaleTimeString();
+    logEl.textContent = `${t} — ${args.join(' ')}\n` + logEl.textContent;
+  }
+
+  function speak(text) {
+    log('Jarvis (speaking):', text);
+    const utter = new SpeechSynthesisUtterance(text);
+    // optional: choose voice, rate, pitch
+    utter.rate = 1.0;
+    window.speechSynthesis.cancel(); // stop any ongoing speech
+    window.speechSynthesis.speak(utter);
+  }
+
+  function createPassiveRecognizer() {
+    const r = new SpeechRecognition();
+    r.lang = 'en-US';
+    r.continuous = true;
+    r.interimResults = false;
+    r.maxAlternatives = 1;
+
+    r.onstart = () => { log('Passive listening started'); updateStatus(); };
+    r.onend = () => {
+      log('Passive listening ended — restarting');
+      // keep it running
+      if (running) {
+        // small delay to avoid continuous crash loops
+        setTimeout(() => r.start().catch(e=>log('Restart passive failed',e)), 200);
+      }
+    };
+    r.onerror = (ev) => log('Passive recognition error', ev.error);
+
+    r.onresult = (ev) => {
+      try {
+        const last = ev.results[ev.results.length-1][0].transcript.trim();
+        log('Heard (passive):', last);
+        checkWakeWord(last.toLowerCase());
+      } catch (e) {
+        log('onresult error', e);
+      }
+    };
+    return r;
+  }
+
+  function createActiveRecognizer(timeoutMs=8000) {
+    const r = new SpeechRecognition();
+    r.lang = 'en-US';
+    r.continuous = false;
+    r.interimResults = false;
+    r.maxAlternatives = 1;
+
+    let timer = null;
+    r.onstart = () => {
+      log('Active listening started');
+      // safety timeout
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(()=>{ try{ r.stop(); } catch(e){} }, timeoutMs);
+    };
+    r.onend = () => {
+      log('Active listening ended');
+      if (timer) clearTimeout(timer);
+      activeRecog = null;
+    };
+    r.onerror = (ev) => log('Active recognition error', ev.error);
+
+    r.onresult = (ev) => {
+      const text = ev.results[0][0].transcript.trim();
+      log('Heard (active):', text);
+      handleCommand(text.toLowerCase());
+    };
+    return r;
+  }
+
+  function checkWakeWord(text) {
+    // Simple phrase detection; can be improved with regex or natural language tests
+    if (text.includes('hey jarvis') || text.includes('hi jarvis') || text.includes('ok jarvis')) {
+      log('Wake word detected');
+      speak('Hello boss');
+      // After greeting, optionally open a short active listener window
+      if (autoFollowCheckbox.checked) {
+        startActiveListening();
+      }
+    }
+  }
+
+  function startActiveListening() {
+    if (activeRecog) {
+      try { activeRecog.stop(); } catch(e){}
+      activeRecog = null;
+    }
+    activeRecog = createActiveRecognizer(8000); // 8s
+    try {
+      activeRecog.start();
+    } catch (e) {
+      log('Failed to start active recognizer', e);
+    }
+  }
+
+  async function handleCommand(text) {
+    // Basic commands
+    if (text.includes('time') || text.includes("what's the time") || text.includes('what time')) {
+      const now = new Date();
+      const timestr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      speak(`Current time is ${timestr}`);
+      return;
+    }
+
+    if (text.includes('open youtube') || text.includes('play on youtube')) {
+      speak('Opening YouTube');
+      window.open('https://www.youtube.com', '_blank');
+      return;
+    }
+
+    if (text.includes('open google') || text.includes('search google')) {
+      speak('Opening Google');
+      window.open('https://www.google.com', '_blank');
+      return;
+    }
+
+    if (text.includes('goodbye') || text.includes('exit') || text.includes('stop listening')) {
+      speak('Going back to sleep');
+      // do nothing: passive continues
+      return;
+    }
+
+    // If user included "ask" or anything else, try OpenAI if key is present
+    const openaiKey = openaiKeyInput.value.trim();
+    if (openaiKey) {
+      // IMPORTANT: calling OpenAI directly from a browser exposes your key to the client.
+      // This example sends the request directly (for testing only). For a safe production setup,
+      // proxy requests through your own server that holds the key.
+      speak('Let me think.');
+      try {
+        const resp = await fetch('https://api.openai.com/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${openaiKey}`
+          },
+          body: JSON.stringify({
+            model: 'gpt-3.5-turbo',
+            messages: [{role:'user', content: text}],
+            max_tokens: 150,
+            temperature: 0.6
+          })
+        });
+        if (!resp.ok) {
+          const errText = await resp.text();
+          log('OpenAI error response', resp.status, errText);
+          speak('I could not reach the server for a smart reply.');
+          return;
+        }
+        const data = await resp.json();
+        const reply = data.choices?.[0]?.message?.content?.trim();
+        if (reply) speak(reply);
+        else speak('I did not get an answer.');
+      } catch (e) {
+        log('OpenAI fetch failed', e);
+        speak('I had trouble getting a smart reply.');
+      }
+      return;
+    }
+
+    // Fallback
+    speak("I didn't understand that. Try asking the time or to open a site.");
+  }
+
+  // Controls
+  startBtn.addEventListener('click', async () => {
+    if (!SpeechRecognition) { alert('SpeechRecognition not supported.'); return; }
+    try {
+      // prompt for mic permission by creating and starting the recognizer
+      if (!recog) {
+        recog = createPassiveRecognizer();
+      }
+      await recog.start();
+      running = true;
+      startBtn.disabled = true;
+      stopBtn.disabled = false;
+      statusEl.textContent = 'Listening (passive)';
+      log('Jarvis started — waiting for wake word "Hey Jarvis"');
+    } catch (e) {
+      log('Start failed', e);
+      alert('Failed to start microphone listening. Check microphone permissions.');
+    }
+  });
+
+  stopBtn.addEventListener('click', () => {
+    running = false;
+    if (recog) {
+      try { recog.stop(); } catch(e){ log('Stop passive error', e); }
+    }
+    if (activeRecog) {
+      try { activeRecog.stop(); } catch(e){ log('Stop active error', e); }
+      activeRecog = null;
+    }
+    startBtn.disabled = false;
+    stopBtn.disabled = true;
+    statusEl.textContent = 'Stopped';
+    log('Jarvis stopped');
+  });
+
+  testWake.addEventListener('click', () => {
+    // Simulate detection for quick test
+    checkWakeWord('hey jarvis');
+  });
+
+  function updateStatus() {
+    statusEl.textContent = running ? 'Listening (passive)' : 'Stopped';
+  }
+
+  // Safety note in console
+  console.log('Jarvis (browser) loaded. Use Start to begin listening.');
+  </script>
+</body>
+</html>
