@@ -113,6 +113,7 @@
     <p>• <strong>Spread fingers</strong> to release and let planets orbit naturally.</p>
     <p id="status"><strong>Status:</strong> camera not started</p>
     <p id="gesture"><strong>Gesture:</strong> waiting...</p>
+    <p id="hint">Tip: run this page on <strong>localhost</strong> or <strong>https</strong> so browser camera permission works.</p>
     <button id="startCam">Start Camera Gesture Control</button>
   </section>
 
@@ -122,7 +123,6 @@
   <script type="module">
     import * as THREE from 'https://unpkg.com/three@0.164.1/build/three.module.js';
     import { Hands } from 'https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js';
-    import { Camera } from 'https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js';
 
     const sceneCanvas = document.getElementById('scene');
     const statusEl = document.getElementById('status');
@@ -269,24 +269,67 @@
 
     hands.onResults(onResults);
 
-    let mediaCamera = null;
+    let mediaStream = null;
+    let trackingActive = false;
+
+    function explainCameraError(err) {
+      if (!err) return 'unknown camera error';
+      if (err.name === 'NotAllowedError') return 'camera permission denied. Please allow camera access and retry.';
+      if (err.name === 'NotFoundError') return 'no camera device found.';
+      if (err.name === 'NotReadableError') return 'camera is already in use by another app.';
+      if (err.name === 'SecurityError') return 'camera blocked by browser security settings.';
+      return `${err.name || 'error'}: ${err.message || 'unable to start camera'}`;
+    }
+
+    async function trackHandsFrame() {
+      if (!trackingActive) return;
+      if (videoEl.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+        await hands.send({ image: videoEl });
+      }
+      requestAnimationFrame(() => {
+        trackHandsFrame().catch((err) => {
+          updateStatus(`tracking error: ${err.message}`);
+          trackingActive = false;
+          startCamBtn.disabled = false;
+          startCamBtn.textContent = 'Retry Camera Gesture Control';
+        });
+      });
+    }
 
     async function startCamera() {
       startCamBtn.disabled = true;
       updateStatus('starting camera...');
       try {
-        mediaCamera = new Camera(videoEl, {
-          onFrame: async () => {
-            await hands.send({ image: videoEl });
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+          throw new Error('getUserMedia not supported by this browser');
+        }
+
+        if (mediaStream) {
+          mediaStream.getTracks().forEach((track) => track.stop());
+          mediaStream = null;
+        }
+
+        mediaStream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            facingMode: 'user',
+            width: { ideal: 640 },
+            height: { ideal: 480 }
           },
-          width: 640,
-          height: 480
+          audio: false
         });
-        mediaCamera.start();
+
+        videoEl.srcObject = mediaStream;
+        await videoEl.play();
+
+        trackingActive = true;
+        trackHandsFrame();
+
         updateStatus('camera active — use pinch to move system');
+        startCamBtn.textContent = 'Camera Running';
       } catch (err) {
-        updateStatus(`camera error: ${err.message}`);
+        updateStatus(explainCameraError(err));
         startCamBtn.disabled = false;
+        startCamBtn.textContent = 'Retry Camera Gesture Control';
       }
     }
 
