@@ -1,0 +1,378 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Hand Gesture Planetary Star Group</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --panel-bg: rgba(10, 14, 24, 0.82);
+      --panel-border: rgba(255, 255, 255, 0.2);
+      --accent: #7dd3fc;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      overflow: hidden;
+      font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      background: radial-gradient(circle at 30% 30%, #111827 0%, #020617 65%, #000 100%);
+      color: #e2e8f0;
+    }
+
+    #scene {
+      width: 100vw;
+      height: 100vh;
+      display: block;
+    }
+
+    #panel {
+      position: fixed;
+      top: 12px;
+      left: 12px;
+      width: min(370px, calc(100vw - 24px));
+      padding: 12px;
+      border-radius: 12px;
+      backdrop-filter: blur(8px);
+      background: var(--panel-bg);
+      border: 1px solid var(--panel-border);
+      box-shadow: 0 8px 30px rgba(0,0,0,.35);
+      z-index: 15;
+    }
+
+    #panel h1 {
+      margin: 0 0 8px;
+      font-size: 1rem;
+      color: #f8fafc;
+    }
+
+    #panel p,
+    #status,
+    #gesture {
+      margin: 4px 0;
+      line-height: 1.3;
+      font-size: .9rem;
+    }
+
+    #gesture strong,
+    #status strong {
+      color: var(--accent);
+    }
+
+    #startCam {
+      margin-top: 8px;
+      width: 100%;
+      border: none;
+      border-radius: 10px;
+      padding: 10px;
+      background: #0ea5e9;
+      color: #082f49;
+      font-weight: 700;
+      cursor: pointer;
+    }
+
+    #startCam:disabled {
+      cursor: not-allowed;
+      opacity: .65;
+    }
+
+    #video,
+    #overlay {
+      position: fixed;
+      right: 12px;
+      bottom: 12px;
+      width: 240px;
+      height: 180px;
+      border-radius: 10px;
+      z-index: 12;
+    }
+
+    #video {
+      object-fit: cover;
+      transform: scaleX(-1);
+      border: 1px solid rgba(255,255,255,.4);
+      opacity: .4;
+    }
+
+    #overlay {
+      pointer-events: none;
+      transform: scaleX(-1);
+      border: 1px solid rgba(125, 211, 252, 0.4);
+    }
+  </style>
+</head>
+<body>
+  <canvas id="scene"></canvas>
+
+  <section id="panel">
+    <h1>3D Planetary Star Group (Hand Gesture Control)</h1>
+    <p>Allow camera access, then use your right hand:</p>
+    <p>• <strong>Pinch</strong> (thumb + index close) to grab and move the group.</p>
+    <p>• <strong>Spread fingers</strong> to release and let planets orbit naturally.</p>
+    <p id="status"><strong>Status:</strong> camera not started</p>
+    <p id="gesture"><strong>Gesture:</strong> waiting...</p>
+    <p id="hint">Tip: run this page on <strong>localhost</strong> or <strong>https</strong> so browser camera permission works.</p>
+    <button id="startCam">Start Camera Gesture Control</button>
+  </section>
+
+  <video id="video" autoplay playsinline muted></video>
+  <canvas id="overlay" width="240" height="180"></canvas>
+
+  <script type="module">
+    import * as THREE from 'https://unpkg.com/three@0.164.1/build/three.module.js';
+    import { Hands } from 'https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js';
+
+    const sceneCanvas = document.getElementById('scene');
+    const statusEl = document.getElementById('status');
+    const gestureEl = document.getElementById('gesture');
+    const startCamBtn = document.getElementById('startCam');
+    const videoEl = document.getElementById('video');
+    const overlay = document.getElementById('overlay');
+    const overlayCtx = overlay.getContext('2d');
+
+    const renderer = new THREE.WebGLRenderer({ canvas: sceneCanvas, antialias: true });
+    renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+    renderer.setSize(innerWidth, innerHeight);
+
+    const scene = new THREE.Scene();
+    scene.fog = new THREE.FogExp2(0x030712, 0.04);
+
+    const camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.1, 100);
+    camera.position.set(0, 1.2, 8.5);
+
+    const ambient = new THREE.AmbientLight(0xffffff, 0.22);
+    scene.add(ambient);
+
+    const sunLight = new THREE.PointLight(0xffcc88, 2.4, 50);
+    sunLight.position.set(0, 0, 0);
+    scene.add(sunLight);
+
+    const starField = new THREE.BufferGeometry();
+    const starCount = 1500;
+    const positions = new Float32Array(starCount * 3);
+    for (let i = 0; i < starCount * 3; i += 3) {
+      positions[i] = (Math.random() - 0.5) * 120;
+      positions[i + 1] = (Math.random() - 0.5) * 120;
+      positions[i + 2] = (Math.random() - 0.5) * 120;
+    }
+    starField.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    const stars = new THREE.Points(starField, new THREE.PointsMaterial({ color: 0xffffff, size: 0.16 }));
+    scene.add(stars);
+
+    const solarGroup = new THREE.Group();
+    scene.add(solarGroup);
+
+    const sun = new THREE.Mesh(
+      new THREE.SphereGeometry(0.6, 32, 32),
+      new THREE.MeshStandardMaterial({ emissive: 0xffaa33, emissiveIntensity: 0.8, color: 0x441a00 })
+    );
+    solarGroup.add(sun);
+
+    const planets = [];
+    const planetData = [
+      { radius: 0.14, orbit: 1.2, speed: 1.3, color: 0x93c5fd },
+      { radius: 0.18, orbit: 1.9, speed: 0.95, color: 0xa3e635 },
+      { radius: 0.23, orbit: 2.8, speed: 0.68, color: 0xfca5a5 },
+      { radius: 0.31, orbit: 3.8, speed: 0.46, color: 0xfde68a }
+    ];
+
+    for (const item of planetData) {
+      const planetMesh = new THREE.Mesh(
+        new THREE.SphereGeometry(item.radius, 28, 28),
+        new THREE.MeshStandardMaterial({ color: item.color, roughness: 0.85, metalness: 0.1 })
+      );
+      solarGroup.add(planetMesh);
+      planets.push({ mesh: planetMesh, ...item, angle: Math.random() * Math.PI * 2 });
+
+      const orbitRing = new THREE.Mesh(
+        new THREE.RingGeometry(item.orbit - 0.01, item.orbit + 0.01, 120),
+        new THREE.MeshBasicMaterial({ color: 0x334155, side: THREE.DoubleSide, transparent: true, opacity: 0.55 })
+      );
+      orbitRing.rotation.x = Math.PI / 2;
+      solarGroup.add(orbitRing);
+    }
+
+    let pinchActive = false;
+    let gestureX = 0;
+    let gestureY = 0;
+    const smoothTarget = new THREE.Vector3(0, 0, 0);
+
+    function updateStatus(text) {
+      statusEl.innerHTML = `<strong>Status:</strong> ${text}`;
+    }
+
+    function updateGesture(text) {
+      gestureEl.innerHTML = `<strong>Gesture:</strong> ${text}`;
+    }
+
+    function clamp(v, min, max) {
+      return Math.min(max, Math.max(min, v));
+    }
+
+    function drawLandmarks(landmarks) {
+      overlayCtx.clearRect(0, 0, overlay.width, overlay.height);
+      if (!landmarks) return;
+
+      overlayCtx.strokeStyle = '#7dd3fc';
+      overlayCtx.fillStyle = '#0ea5e9';
+      for (const pt of landmarks) {
+        const x = pt.x * overlay.width;
+        const y = pt.y * overlay.height;
+        overlayCtx.beginPath();
+        overlayCtx.arc(x, y, 2.3, 0, Math.PI * 2);
+        overlayCtx.fill();
+      }
+    }
+
+    function onResults(results) {
+      const hand = results.multiHandLandmarks?.[0];
+      drawLandmarks(hand);
+
+      if (!hand) {
+        pinchActive = false;
+        updateGesture('no hand detected');
+        return;
+      }
+
+      const thumbTip = hand[4];
+      const indexTip = hand[8];
+      const middleTip = hand[12];
+      const wrist = hand[0];
+
+      const pinchDistance = Math.hypot(thumbTip.x - indexTip.x, thumbTip.y - indexTip.y, thumbTip.z - indexTip.z);
+      const openDistance = Math.hypot(indexTip.x - middleTip.x, indexTip.y - middleTip.y, indexTip.z - middleTip.z);
+
+      pinchActive = pinchDistance < 0.06;
+      if (pinchActive) {
+        gestureX = (0.5 - wrist.x) * 8;
+        gestureY = (0.55 - wrist.y) * 5;
+        updateGesture(`pinch move (${gestureX.toFixed(2)}, ${gestureY.toFixed(2)})`);
+      } else if (openDistance > 0.08) {
+        updateGesture('open hand (released)');
+      } else {
+        updateGesture('tracking hand');
+      }
+    }
+
+    const hands = new Hands({
+      locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+    });
+
+    hands.setOptions({
+      maxNumHands: 1,
+      modelComplexity: 1,
+      minDetectionConfidence: 0.7,
+      minTrackingConfidence: 0.6
+    });
+
+    hands.onResults(onResults);
+
+    let mediaStream = null;
+    let trackingActive = false;
+
+    function explainCameraError(err) {
+      if (!err) return 'unknown camera error';
+      if (err.name === 'NotAllowedError') return 'camera permission denied. Please allow camera access and retry.';
+      if (err.name === 'NotFoundError') return 'no camera device found.';
+      if (err.name === 'NotReadableError') return 'camera is already in use by another app.';
+      if (err.name === 'SecurityError') return 'camera blocked by browser security settings.';
+      return `${err.name || 'error'}: ${err.message || 'unable to start camera'}`;
+    }
+
+    async function trackHandsFrame() {
+      if (!trackingActive) return;
+      if (videoEl.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+        await hands.send({ image: videoEl });
+      }
+      requestAnimationFrame(() => {
+        trackHandsFrame().catch((err) => {
+          updateStatus(`tracking error: ${err.message}`);
+          trackingActive = false;
+          startCamBtn.disabled = false;
+          startCamBtn.textContent = 'Retry Camera Gesture Control';
+        });
+      });
+    }
+
+    async function startCamera() {
+      startCamBtn.disabled = true;
+      updateStatus('starting camera...');
+      try {
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+          throw new Error('getUserMedia not supported by this browser');
+        }
+
+        if (mediaStream) {
+          mediaStream.getTracks().forEach((track) => track.stop());
+          mediaStream = null;
+        }
+
+        mediaStream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            facingMode: 'user',
+            width: { ideal: 640 },
+            height: { ideal: 480 }
+          },
+          audio: false
+        });
+
+        videoEl.srcObject = mediaStream;
+        await videoEl.play();
+
+        trackingActive = true;
+        trackHandsFrame();
+
+        updateStatus('camera active — use pinch to move system');
+        startCamBtn.textContent = 'Camera Running';
+      } catch (err) {
+        updateStatus(explainCameraError(err));
+        startCamBtn.disabled = false;
+        startCamBtn.textContent = 'Retry Camera Gesture Control';
+      }
+    }
+
+    startCamBtn.addEventListener('click', startCamera);
+
+    addEventListener('resize', () => {
+      camera.aspect = innerWidth / innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(innerWidth, innerHeight);
+    });
+
+    const clock = new THREE.Clock();
+
+    function animate() {
+      requestAnimationFrame(animate);
+      const t = clock.getElapsedTime();
+      const dt = clock.getDelta();
+
+      sun.rotation.y += dt * 0.8;
+      stars.rotation.y += dt * 0.03;
+
+      for (const p of planets) {
+        p.angle += dt * p.speed;
+        p.mesh.position.x = Math.cos(p.angle) * p.orbit;
+        p.mesh.position.z = Math.sin(p.angle) * p.orbit;
+        p.mesh.position.y = Math.sin(t * p.speed) * 0.08;
+      }
+
+      if (pinchActive) {
+        smoothTarget.x = clamp(gestureX, -4.2, 4.2);
+        smoothTarget.y = clamp(gestureY, -2.6, 2.6);
+      } else {
+        smoothTarget.x = Math.sin(t * 0.25) * 0.8;
+        smoothTarget.y = Math.cos(t * 0.2) * 0.3;
+      }
+
+      solarGroup.position.lerp(smoothTarget, pinchActive ? 0.22 : 0.03);
+      solarGroup.rotation.y += dt * 0.12;
+
+      renderer.render(scene, camera);
+    }
+
+    animate();
+  </script>
+</body>
+</html>
